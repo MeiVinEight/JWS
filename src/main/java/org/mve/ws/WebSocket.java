@@ -74,6 +74,7 @@ public class WebSocket
 
 	// Read Write buffer
 	private ByteBuffer RB = ByteBuffer.allocate(4096);
+	private ByteBuffer WB = ByteBuffer.allocate(4096);
 	private int RS = WebSocket.RS_OPCODE;
 
 	// Data buffer
@@ -384,7 +385,7 @@ public class WebSocket
 						}
 						else
 						{
-							this.expand(this.length);
+							this.RB = WebSocket.expand(this.RB, this.length);
 							this.RB.limit((int) this.length);
 							this.RS = WebSocket.RS_PAYLOAD;
 						}
@@ -398,7 +399,7 @@ public class WebSocket
 					if (this.RB.hasRemaining()) break;
 					this.RB.flip();
 					this.RB.get(this.masking, 0, 4);
-					this.expand(this.length);
+					this.RB = WebSocket.expand(this.RB, this.length);
 					this.RB.limit((int) this.length);
 					this.RS = WebSocket.RS_PAYLOAD;
 				}
@@ -429,6 +430,7 @@ public class WebSocket
 							break;
 						case WebSocket.OPC_PING:
 							// send pong
+							this.RB = WebSocket.expand(this.RB, payload.length + 16);
 							this.random.nextBytes(this.masking);
 							WebSocket.masking(this.masking, payload);
 							this.RB.clear();
@@ -469,8 +471,27 @@ public class WebSocket
 	{
 		try
 		{
+			this.WB = WebSocket.expand(this.WB, len + 16);
 			this.locking[WebSocket.WRITING].lock();
 			if (!this.writing()) return;
+			this.WB.clear();
+			this.WB.put((byte) (WebSocket.MASK_FIN | WebSocket.OPC_BINARY));
+			this.WB.put((byte) (WebSocket.MASK_MSK | 127));
+			this.WB.putLong(len);
+			this.random.nextBytes(this.masking);
+			byte[] payload = new byte[len];
+			System.arraycopy(buf, off, payload, 0, len);
+			WebSocket.masking(this.masking, payload);
+			this.WB.put(this.masking, 0, 4);
+			this.WB.put(payload);
+			this.WB.flip();
+			while (this.WB.hasRemaining())
+				this.socket.write(this.WB);
+		}
+		catch (IOException e)
+		{
+			this.close();
+			JavaVM.exception(e);
 		}
 		finally
 		{
@@ -509,14 +530,15 @@ public class WebSocket
 		}
 	}
 
-	private void expand(long limit)
+	private static ByteBuffer expand(ByteBuffer buf, long limit)
 	{
-		int oldCap = this.RB.capacity();
+		int oldCap = buf.capacity();
+		if (oldCap <= limit) return buf;
 		while (oldCap < limit)
 		{
 			oldCap <<= 1;
 		}
-		this.RB = ByteBuffer.allocate(oldCap);
+		return ByteBuffer.allocate(oldCap);
 	}
 
 	private static int transfer(SocketChannel socket, boolean blocking, ByteBuffer buffer) throws IOException

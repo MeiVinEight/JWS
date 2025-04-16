@@ -75,7 +75,7 @@ public class WebSocket
 	// Read Write buffer
 	private ByteBuffer RB = ByteBuffer.allocate(4096);
 	private ByteBuffer WB = ByteBuffer.allocate(4096);
-	private int RS = WebSocket.RS_OPCODE;
+	private int RS = WebSocket.RS_OVERED;
 
 	// Data buffer
 
@@ -152,7 +152,6 @@ public class WebSocket
 					this.socket = SocketChannel.open();
 					this.socket.configureBlocking(this.blocking);
 					SocketAddress address = new InetSocketAddress(this.host, this.port);
-					System.out.println(address);
 					this.socket.connect(address);
 					this.status = WebSocket.STAT_CONNECTING;
 
@@ -314,141 +313,10 @@ public class WebSocket
 		{
 			this.locking[WebSocket.READING].lock();
 			if (!this.reading()) return -1;
-			switch (this.RS)
+			while (this.array.length() < len)
 			{
-				case WebSocket.RS_OVERED:
-				{
-					this.fin = false;
-					this.opcode = 0;
-					this.length = 0;
-					this.masking[0] = 0;
-					this.masking[1] = 0;
-					this.masking[2] = 0;
-					this.masking[3] = 0;
-					this.masking[4] = 0;
-					this.RB.clear();
-					this.RB.limit(1);
-					this.RS = WebSocket.RS_OPCODE;
-				}
-				case WebSocket.RS_OPCODE:
-				{
-					int read = WebSocket.transfer(this.socket, this.blocking, this.RB);
-					if (read == -1)
-						this.close();
-					if (this.RB.hasRemaining()) break;
-					this.RB.flip();
-					int b1 = this.RB.get();
-					this.fin = (b1 & WebSocket.MASK_FIN) != 0;
-					if ((b1 & WebSocket.MASK_RSV) != 0)
-						throw new IllegalStateException("Reserved not zero " + ((b1 & WebSocket.MASK_RSV) >> 4));
-					this.opcode = b1 & WebSocket.MASK_OPC;
-					this.RB.clear();
-					this.RB.limit(1);
-					this.RS = WebSocket.RS_LENGTH;
-				}
-				case WebSocket.RS_LENGTH:
-				{
-					int read = WebSocket.transfer(this.socket, this.blocking, this.RB);
-					if (read == -1)
-						this.close();
-					if (this.RB.hasRemaining()) break;
-					this.RB.flip();
-					if (this.RB.limit() == 1)
-					{
-						int b1 = this.RB.get();
-						if ((b1 & WebSocket.MASK_MSK) != 0) this.masking[4] = 1;
-						this.length = b1 & WebSocket.MASK_LEN;
-						if (this.length == 126)
-						{
-							this.length = 0;
-							this.RB.clear();
-							this.RB.limit(2);
-							break;
-						}
-						else if (this.length == 127)
-						{
-							this.length = 0;
-							this.RB.clear();
-							this.RB.limit(8);
-							break;
-						}
-					}
-					else
-					{
-						if (this.RB.limit() == 2) this.length = this.RB.getShort();
-						else if (this.RB.limit() == 8) this.length = this.RB.getLong();
-						this.RB.clear();
-						if (this.masking[4] != 0)
-						{
-							this.RB.limit(4);
-							this.status = WebSocket.RS_MASKING;
-						}
-						else
-						{
-							this.RB = WebSocket.expand(this.RB, this.length);
-							this.RB.limit((int) this.length);
-							this.RS = WebSocket.RS_PAYLOAD;
-						}
-					}
-				}
-				case WebSocket.RS_MASKING:
-				{
-					int read = WebSocket.transfer(this.socket, this.blocking, this.RB);
-					if (read == -1)
-						this.close();
-					if (this.RB.hasRemaining()) break;
-					this.RB.flip();
-					this.RB.get(this.masking, 0, 4);
-					this.RB = WebSocket.expand(this.RB, this.length);
-					this.RB.limit((int) this.length);
-					this.RS = WebSocket.RS_PAYLOAD;
-				}
-				case WebSocket.RS_PAYLOAD:
-				{
-					int read = WebSocket.transfer(this.socket, this.blocking, this.RB);
-					if (read == -1)
-						this.close();
-					if (this.RB.hasRemaining()) break;
-					this.RS = WebSocket.RS_OVERED;
-					this.RB.flip();
-					byte[] payload = new byte[this.RB.remaining()];
-					this.RB.get(payload);
-					if (this.masking[4] != 0)
-					{
-						WebSocket.masking(this.masking, payload);
-					}
-					switch (this.opcode)
-					{
-						case WebSocket.OPC_CONTINUE:
-						case WebSocket.OPC_TEXT:
-						case WebSocket.OPC_BINARY:
-							this.array.put(payload);
-							break;
-						case WebSocket.OPC_CLOSE:
-							this.reading = false;
-							this.close();
-							break;
-						case WebSocket.OPC_PING:
-							// send pong
-							this.RB = WebSocket.expand(this.RB, payload.length + 16);
-							this.random.nextBytes(this.masking);
-							WebSocket.masking(this.masking, payload);
-							this.RB.clear();
-							this.RB.put((byte) (WebSocket.MASK_FIN | WebSocket.OPC_PING));
-							this.RB.put((byte) (WebSocket.MASK_MSK | 127));
-							this.RB.putLong(this.RB.remaining());
-							this.RB.put(this.masking, 0, 4);
-							this.RB.put(payload);
-							this.RB.flip();
-							this.locking[WebSocket.WRITING].lock();
-							while (this.RB.hasRemaining())
-								this.socket.write(this.RB);
-							this.locking[WebSocket.WRITING].unlock();
-							break;
-						case WebSocket.OPC_PONG:
-							break;
-					}
-				}
+				this.receive();
+				if (this.blocking) break;
 			}
 			int read = this.array.length();
 			if (read > len) read = len;
@@ -520,6 +388,165 @@ public class WebSocket
 	{
 		// TODO Control close
 		this.reset();
+	}
+
+	private void receive()
+	{
+		try
+		{
+			this.locking[WebSocket.READING].lock();
+			do
+			{
+				switch (this.RS)
+				{
+					case WebSocket.RS_OVERED:
+					{
+						this.fin = false;
+						this.opcode = 0;
+						this.length = 0;
+						this.masking[0] = 0;
+						this.masking[1] = 0;
+						this.masking[2] = 0;
+						this.masking[3] = 0;
+						this.masking[4] = 0;
+						this.RB.clear();
+						this.RB.limit(1);
+						this.RS = WebSocket.RS_OPCODE;
+					}
+					case WebSocket.RS_OPCODE:
+					{
+						int read = WebSocket.transfer(this.socket, this.blocking, this.RB);
+						if (read == -1)
+							this.close();
+						if (this.RB.hasRemaining()) break;
+						this.RB.flip();
+						int b1 = this.RB.get() & 0xFF;
+						this.fin = (b1 & WebSocket.MASK_FIN) != 0;
+						if ((b1 & WebSocket.MASK_RSV) != 0)
+							throw new IllegalStateException("Reserved not zero " + ((b1 & WebSocket.MASK_RSV) >> 4));
+						this.opcode = b1 & WebSocket.MASK_OPC;
+						this.RB.clear();
+						this.RB.limit(1);
+						this.RS = WebSocket.RS_LENGTH;
+					}
+					case WebSocket.RS_LENGTH:
+					{
+						int read = WebSocket.transfer(this.socket, this.blocking, this.RB);
+						if (read == -1)
+							this.close();
+						if (this.RB.hasRemaining()) break;
+						this.RB.flip();
+						if (this.RB.limit() == 1)
+						{
+							int b1 = this.RB.get() & 0xFF;
+							if ((b1 & WebSocket.MASK_MSK) != 0) this.masking[4] = 1;
+							this.length = b1 & WebSocket.MASK_LEN;
+							if (this.length == 126)
+							{
+								this.length = 0;
+								this.RB.clear();
+								this.RB.limit(2);
+								break;
+							}
+							else if (this.length == 127)
+							{
+								this.length = 0;
+								this.RB.clear();
+								this.RB.limit(8);
+								break;
+							}
+						}
+						else
+						{
+							if (this.RB.limit() == 2) this.length = this.RB.getShort() & 0xFFFF;
+							else if (this.RB.limit() == 8) this.length = this.RB.getLong();
+						}
+						this.RB.clear();
+						if (this.masking[4] != 0)
+						{
+							this.RB.limit(4);
+							this.status = WebSocket.RS_MASKING;
+						}
+						else
+						{
+							this.RB = WebSocket.expand(this.RB, this.length);
+							this.RB.limit((int) this.length);
+							this.RS = WebSocket.RS_PAYLOAD;
+							break;
+						}
+					}
+					case WebSocket.RS_MASKING:
+					{
+						int read = WebSocket.transfer(this.socket, this.blocking, this.RB);
+						if (read == -1)
+							this.close();
+						if (this.RB.hasRemaining()) break;
+						this.RB.flip();
+						this.RB.get(this.masking, 0, 4);
+						this.RB = WebSocket.expand(this.RB, this.length);
+						this.RB.limit((int) this.length);
+						this.RS = WebSocket.RS_PAYLOAD;
+					}
+					case WebSocket.RS_PAYLOAD:
+					{
+						int read = WebSocket.transfer(this.socket, this.blocking, this.RB);
+						if (read == -1)
+							this.close();
+						if (this.RB.hasRemaining()) break;
+						this.RS = WebSocket.RS_OVERED;
+						this.RB.flip();
+						byte[] payload = new byte[this.RB.remaining()];
+						this.RB.get(payload);
+						if (this.masking[4] != 0)
+						{
+							WebSocket.masking(this.masking, payload);
+						}
+						switch (this.opcode)
+						{
+							case WebSocket.OPC_CONTINUE:
+							case WebSocket.OPC_TEXT:
+							case WebSocket.OPC_BINARY:
+								this.array.put(payload);
+								break;
+							case WebSocket.OPC_CLOSE:
+								this.reading = false;
+								this.close();
+								break;
+							case WebSocket.OPC_PING:
+								// send pong
+								this.RB = WebSocket.expand(this.RB, payload.length + 16);
+								this.random.nextBytes(this.masking);
+								WebSocket.masking(this.masking, payload);
+								this.RB.clear();
+								this.RB.put((byte) (WebSocket.MASK_FIN | WebSocket.OPC_PING));
+								this.RB.put((byte) (WebSocket.MASK_MSK | 127));
+								this.RB.putLong(this.RB.remaining());
+								this.RB.put(this.masking, 0, 4);
+								this.RB.put(payload);
+								this.RB.flip();
+								this.locking[WebSocket.WRITING].lock();
+								while (this.RB.hasRemaining())
+									this.socket.write(this.RB);
+								this.locking[WebSocket.WRITING].unlock();
+								break;
+							case WebSocket.OPC_PONG:
+								break;
+						}
+						return;
+					}
+				}
+			}
+			while (this.blocking);
+		}
+		catch (Throwable e)
+		{
+			this.close();
+			JavaVM.exception(e);
+		}
+		finally
+		{
+			this.locking[WebSocket.READING].unlock();
+		}
 	}
 
 	private static void masking(byte[] masking, byte[] payload)

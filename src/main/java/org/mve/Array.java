@@ -51,7 +51,7 @@ public class Array
 		if (this.length() == 0) return -1;
 		byte b = this.array[this.tail++];
 		this.tail %= this.array.length;
-		return b;
+		return b & 0xFF;
 	}
 
 	public void get(byte[] buf)
@@ -65,7 +65,7 @@ public class Array
 		if (len > this.length() || (off + len) > buf.length) throw new ArrayIndexOutOfBoundsException(len);
 		int clen = len;
 		if (this.tail + clen > this.array.length) clen = this.array.length - this.tail;
-		System.arraycopy(this.array, this.head, buf, off, clen);
+		System.arraycopy(this.array, this.tail, buf, off, clen);
 		off += clen;
 		len -= clen;
 		this.tail += clen;

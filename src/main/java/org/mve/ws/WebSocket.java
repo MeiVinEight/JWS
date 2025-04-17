@@ -220,7 +220,7 @@ public class WebSocket
 							if (!carriage)
 								throw new IllegalArgumentException("Wrong HTTP response: Expected CR before LF");
 							carriage = false;
-							if (!builder.isEmpty())
+							if (builder.length() > 0)
 								response.add(builder.toString());
 							builder.setLength(0);
 						}
@@ -231,7 +231,7 @@ public class WebSocket
 						}
 					}
 
-					String respLine = response.getFirst();
+					String respLine = response.get(0);
 					int code = Integer.parseInt(respLine.substring(9, 12));
 					if (code != 101) throw new IllegalStateException(String.valueOf(code));
 
@@ -267,8 +267,6 @@ public class WebSocket
 					this.reading = true;
 					this.writing = true;
 					status = WebSocket.STAT_CONNECTED;
-					// this.array.put(this.RB.array(), this.RB.position(), this.RB.remaining());
-					// this.RB.clear();
 					return true;
 				default: return true;
 			}

@@ -46,6 +46,12 @@ public class Array
 		this.array[(this.tail + idx) % this.array.length] = (byte) b;
 	}
 
+	public byte front()
+	{
+		if (this.length() == 0) return -1;
+		return this.array[this.tail];
+	}
+
 	public int get()
 	{
 		if (this.length() == 0) return -1;

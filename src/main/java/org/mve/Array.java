@@ -46,6 +46,19 @@ public class Array
 		this.array[(this.tail + idx) % this.array.length] = (byte) b;
 	}
 
+	public void integer(long val, int len)
+	{
+		if (len < 0 || len > 8)
+			throw new IllegalArgumentException(String.valueOf(len));
+		byte[] buf = new byte[len];
+		while (len-- > 0)
+		{
+			buf[len] = (byte) (val & 0xFF);
+			val >>>= 8;
+		}
+		this.put(buf, 0, buf.length);
+	}
+
 	public byte front()
 	{
 		if (this.length() == 0) return -1;
@@ -84,6 +97,21 @@ public class Array
 	{
 		if (idx >= this.length()) return -1;
 		return this.array[(this.tail + idx) % this.array.length];
+	}
+
+	public long integer(int len)
+	{
+		if (len < 0 || len > 8)
+			throw new IllegalArgumentException(String.valueOf(len));
+		if (len > this.length())
+			throw new ArrayIndexOutOfBoundsException(len);
+		long val = 0;
+		while (len-- > 0)
+		{
+			val <<= 8;
+			val |= this.get();
+		}
+		return val;
 	}
 
 	public void trim(int len)

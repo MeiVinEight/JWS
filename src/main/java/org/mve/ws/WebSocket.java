@@ -22,6 +22,11 @@ import java.util.concurrent.locks.ReentrantLock;
 
 public class WebSocket
 {
+	public static final String METHOD_GET = "GET";
+	public static final String HTTP_VERSION = "HTTP/1.1";
+	public static final String HEADER_HOST = "Host";
+	public static final String HEADER_CONNECTION = "Connection";
+	public static final String HEADER_UPGRADE = "Upgrade";
 	public static final String HEADER_SEC_WS_KEY       = "Sec-WebSocket-Key";
 	public static final String HEADER_SEC_WS_VERSION   = "Sec-WebSocket-Version";
 	public static final String HEADER_SEC_WS_PROTOCOL  = "Sec-WebSocket-Protocol";
@@ -125,9 +130,9 @@ public class WebSocket
 
 		this.reset();
 		this.header.clear();
-		this.header(HTTP.HEADER_HOST, this.host);
-		this.header(HTTP.HEADER_CONNECTION, "Upgrade");
-		this.header(HTTP.HEADER_UPGRADE, "websocket");
+		this.header(WebSocket.HEADER_HOST, this.host);
+		this.header(WebSocket.HEADER_CONNECTION, "Upgrade");
+		this.header(WebSocket.HEADER_UPGRADE, "websocket");
 		this.header(WebSocket.HEADER_SEC_WS_KEY, WebSocket.key(this.random));
 		this.header(WebSocket.HEADER_SEC_WS_VERSION, "13");
 	}
@@ -164,9 +169,12 @@ public class WebSocket
 					this.status = WebSocket.STAT_HANDSHAKE1;
 
 				case WebSocket.STAT_HANDSHAKE1:
-					StringBuilder requ = new StringBuilder("GET ");
+					StringBuilder requ = new StringBuilder(WebSocket.METHOD_GET);
+					requ.append(" ");
 					requ.append(this.path);
-					requ.append(" HTTP/1.1\r\n");
+					requ.append(" ");
+					requ.append(HTTP_VERSION);
+					requ.append("\r\n");
 					for (Map.Entry<String, String> header : this.header.entrySet())
 					{
 						requ.append(header.getKey());
@@ -248,11 +256,11 @@ public class WebSocket
 							resp.put(key, value);
 					}
 
-					if (!"Upgrade".equalsIgnoreCase(resp.get(HTTP.HEADER_CONNECTION)))
-						throw new IllegalStateException(HTTP.HEADER_CONNECTION + ": " + resp.get(HTTP.HEADER_CONNECTION));
+					if (!"Upgrade".equalsIgnoreCase(resp.get(WebSocket.HEADER_CONNECTION)))
+						throw new IllegalStateException(WebSocket.HEADER_CONNECTION + ": " + resp.get(WebSocket.HEADER_CONNECTION));
 
-					if (!"websocket".equalsIgnoreCase(resp.get(HTTP.HEADER_UPGRADE)))
-						throw new IllegalStateException(HTTP.HEADER_UPGRADE + ": " + resp.get(HTTP.HEADER_UPGRADE));
+					if (!"websocket".equalsIgnoreCase(resp.get(WebSocket.HEADER_UPGRADE)))
+						throw new IllegalStateException(WebSocket.HEADER_UPGRADE + ": " + resp.get(WebSocket.HEADER_UPGRADE));
 
 					String wsAccept = resp.get(WebSocket.HEADER_SEC_WS_ACCEPT);
 					if (!WebSocket.accept(this.header.get(WebSocket.HEADER_SEC_WS_KEY)).equals(wsAccept))

@@ -24,4 +24,14 @@ public class WebSocketTest
 		}
 		ws.close();
 	}
+
+	@Test
+	public void test3()
+	{
+		WebSocket ws = new WebSocket("ws://broadcastlv.chat.bilibili.com:2244/sub");
+		while (!ws.finish())
+			Thread.yield();
+
+		ws.close();
+	}
 }

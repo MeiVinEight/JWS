@@ -84,7 +84,6 @@ public class WebSocket
 
 	// Data buffer
 
-	private boolean fin = false;
 	private int opcode = 0;
 	private long length = 0;
 	private final byte[] masking = new byte[5];
@@ -393,7 +392,72 @@ public class WebSocket
 
 	public void close()
 	{
-		// TODO Control close
+		try
+		{
+			this.locking[WebSocket.READING].lock();
+			if (this.status == WebSocket.STAT_CLOSED || this.status == WebSocket.STAT_CLOSING)
+				return;
+			this.status = WebSocket.STAT_CLOSING;
+		}
+		finally
+		{
+			this.locking[WebSocket.READING].unlock();
+		}
+
+		if (this.writing)
+		{
+			try
+			{
+				Array buf = new Array(2);
+				buf.integer(1000, 2);
+				byte[] data = new byte[2];
+				buf.get(data, 0, 2);
+				this.locking[WebSocket.WRITING].lock();
+				this.writing = false;
+				this.WB.clear();
+				this.WB.put((byte) (WebSocket.MASK_FIN | WebSocket.OPC_CLOSE));
+				this.WB.put((byte) (WebSocket.MASK_MSK | 2));
+				byte[] mask = new byte[4];
+				this.random.nextBytes(mask);
+				WebSocket.masking(mask, data);
+				this.WB.put(mask);
+				this.WB.put(data);
+				this.WB.flip();
+				while (this.WB.hasRemaining())
+					this.socket.write(this.WB);
+			}
+			catch (IOException ignored)
+			{
+			}
+			finally
+			{
+				this.locking[WebSocket.WRITING].unlock();
+			}
+		}
+
+		if (this.reading)
+		{
+			try
+			{
+				this.locking[WebSocket.READING].lock();
+				this.socket.configureBlocking(false);
+				long timestamp = System.currentTimeMillis();
+				while (this.reading && ((timestamp + 10000) < System.currentTimeMillis()))
+				{
+					this.receive();
+				}
+				// Timeout
+				this.reading = false;
+			}
+			catch (IOException ignored)
+			{
+			}
+			finally
+			{
+				this.locking[WebSocket.READING].unlock();
+			}
+		}
+		this.status = WebSocket.STAT_CLOSED;
 		this.reset();
 	}
 
@@ -408,7 +472,6 @@ public class WebSocket
 				{
 					case WebSocket.RS_OVERED:
 					{
-						this.fin = false;
 						this.opcode = 0;
 						this.length = 0;
 						this.masking[0] = 0;
@@ -428,7 +491,6 @@ public class WebSocket
 						if (this.RB.hasRemaining()) break;
 						this.RB.flip();
 						int b1 = this.RB.get() & 0xFF;
-						this.fin = (b1 & WebSocket.MASK_FIN) != 0;
 						if ((b1 & WebSocket.MASK_RSV) != 0)
 							throw new IllegalStateException("Reserved not zero " + ((b1 & WebSocket.MASK_RSV) >> 4));
 						this.opcode = b1 & WebSocket.MASK_OPC;

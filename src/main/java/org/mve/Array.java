@@ -14,7 +14,7 @@ public class Array
 
 	public void put(int b)
 	{
-		this.expand(this.capacity() + 1);
+		this.expand(this.length() + 1);
 		this.array[this.head++] = (byte) b;
 		this.head %= this.array.length;
 	}
@@ -96,7 +96,7 @@ public class Array
 
 	public void expand(int cap)
 	{
-		if (this.capacity() <= cap) return;
+		if (this.capacity() >= cap) return;
 		int oldCap = this.array.length - 1;
 		while (oldCap < cap) oldCap *= 2;
 		byte[] newArray = new byte[oldCap + 1];
@@ -119,6 +119,11 @@ public class Array
 		this.array = newArray;
 		this.tail = 0;
 		this.head = length;
+	}
+
+	public int position()
+	{
+		return this.tail;
 	}
 
 	public int length()

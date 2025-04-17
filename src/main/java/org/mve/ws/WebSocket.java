@@ -186,6 +186,7 @@ public class WebSocket
 					this.RB.clear();
 					this.RB.limit(1);
 					int read = this.socket.read(this.RB);
+					if (read == 0) return false;
 					this.RB.flip();
 					// for (int i = 0; i < this.RB.limit(); i++)
 					while (this.RB.hasRemaining())

@@ -373,6 +373,45 @@ public class WebSocket
 		}
 	}
 
+	public void shutdown(boolean reading) throws IOException
+	{
+		if (reading)
+		{
+			this.locking[WebSocket.READING].lock();
+			this.reading = false;
+			this.locking[WebSocket.READING].unlock();
+			return;
+		}
+
+		try
+		{
+			this.locking[WebSocket.WRITING].lock();
+			if (!this.writing()) return;
+
+			Array buf = new Array(2);
+			buf.integer(1000, 2);
+			byte[] data = new byte[2];
+			buf.get(data, 0, 2);
+			this.locking[WebSocket.WRITING].lock();
+			this.writing = false;
+			this.WB.clear();
+			this.WB.put((byte) (WebSocket.MASK_FIN | WebSocket.OPC_CLOSE));
+			this.WB.put((byte) (WebSocket.MASK_MSK | 2));
+			byte[] mask = new byte[4];
+			this.random.nextBytes(mask);
+			WebSocket.masking(mask, data);
+			this.WB.put(mask);
+			this.WB.put(data);
+			this.WB.flip();
+			while (this.WB.hasRemaining())
+				this.socket.write(this.WB);
+		}
+		finally
+		{
+			this.locking[WebSocket.WRITING].unlock();
+		}
+	}
+
 	public void reset()
 	{
 		this.reading = false;
@@ -404,35 +443,12 @@ public class WebSocket
 			this.locking[WebSocket.READING].unlock();
 		}
 
-		if (this.writing)
+		try
 		{
-			try
-			{
-				Array buf = new Array(2);
-				buf.integer(1000, 2);
-				byte[] data = new byte[2];
-				buf.get(data, 0, 2);
-				this.locking[WebSocket.WRITING].lock();
-				this.writing = false;
-				this.WB.clear();
-				this.WB.put((byte) (WebSocket.MASK_FIN | WebSocket.OPC_CLOSE));
-				this.WB.put((byte) (WebSocket.MASK_MSK | 2));
-				byte[] mask = new byte[4];
-				this.random.nextBytes(mask);
-				WebSocket.masking(mask, data);
-				this.WB.put(mask);
-				this.WB.put(data);
-				this.WB.flip();
-				while (this.WB.hasRemaining())
-					this.socket.write(this.WB);
-			}
-			catch (IOException ignored)
-			{
-			}
-			finally
-			{
-				this.locking[WebSocket.WRITING].unlock();
-			}
+			this.shutdown(false);
+		}
+		catch (IOException ignored)
+		{
 		}
 
 		if (this.reading)
@@ -440,6 +456,7 @@ public class WebSocket
 			try
 			{
 				this.locking[WebSocket.READING].lock();
+				this.shutdown(true);
 				this.socket.configureBlocking(false);
 				long timestamp = System.currentTimeMillis();
 				while (this.reading && ((timestamp + 10000) < System.currentTimeMillis()))

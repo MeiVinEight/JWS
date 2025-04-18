@@ -62,7 +62,6 @@ public class WebSocket
 
 	private static final int READING = 0;
 	private static final int WRITING = 1;
-	private static final int STATING = 2;
 
 	public boolean secure;
 	public String host;
@@ -75,7 +74,7 @@ public class WebSocket
 	private boolean writing = false;
 	private SocketChannel socket = null;
 	private boolean blocking = true;
-	private final ReentrantLock[] locking = new ReentrantLock[]{new ReentrantLock(), new ReentrantLock(), new ReentrantLock()};
+	private final ReentrantLock[] locking = new ReentrantLock[]{new ReentrantLock(), new ReentrantLock()};
 
 	// Read Write buffer
 	private ByteBuffer RB = ByteBuffer.allocate(4096);
@@ -86,7 +85,7 @@ public class WebSocket
 
 	private int opcode = 0;
 	private long length = 0;
-	private final byte[] masking = new byte[5];
+	private final MaskingKey masking = new MaskingKey();
 	private final Array array = new Array(4096);
 
 	public WebSocket(String url)
@@ -352,11 +351,12 @@ public class WebSocket
 			this.WB.put((byte) (WebSocket.MASK_FIN | WebSocket.OPC_BINARY));
 			this.WB.put((byte) (WebSocket.MASK_MSK | 127));
 			this.WB.putLong(len);
-			this.random.nextBytes(this.masking);
+			this.masking.next(this.random);
+			this.masking.having = true;
 			byte[] payload = new byte[len];
 			System.arraycopy(buf, off, payload, 0, len);
-			WebSocket.masking(this.masking, payload);
-			this.WB.put(this.masking, 0, 4);
+			this.masking.masking(payload);
+			this.WB.put(this.masking.value());
 			this.WB.put(payload);
 			this.WB.flip();
 			while (this.WB.hasRemaining())
@@ -474,20 +474,14 @@ public class WebSocket
 					{
 						this.opcode = 0;
 						this.length = 0;
-						this.masking[0] = 0;
-						this.masking[1] = 0;
-						this.masking[2] = 0;
-						this.masking[3] = 0;
-						this.masking[4] = 0;
+						this.masking.reset();
 						this.RB.clear();
 						this.RB.limit(1);
 						this.RS = WebSocket.RS_OPCODE;
 					}
 					case WebSocket.RS_OPCODE:
 					{
-						int read = WebSocket.transfer(this.socket, this.blocking, this.RB);
-						if (read == -1)
-							this.close();
+						this.transfer(this.RB);
 						if (this.RB.hasRemaining()) break;
 						this.RB.flip();
 						int b1 = this.RB.get() & 0xFF;
@@ -500,15 +494,13 @@ public class WebSocket
 					}
 					case WebSocket.RS_LENGTH:
 					{
-						int read = WebSocket.transfer(this.socket, this.blocking, this.RB);
-						if (read == -1)
-							this.close();
+						this.transfer(this.RB);
 						if (this.RB.hasRemaining()) break;
 						this.RB.flip();
 						if (this.RB.limit() == 1)
 						{
 							int b1 = this.RB.get() & 0xFF;
-							if ((b1 & WebSocket.MASK_MSK) != 0) this.masking[4] = 1;
+							if ((b1 & WebSocket.MASK_MSK) != 0) this.masking.having = true;
 							this.length = b1 & WebSocket.MASK_LEN;
 							if (this.length == 126)
 							{
@@ -531,7 +523,7 @@ public class WebSocket
 							else if (this.RB.limit() == 8) this.length = this.RB.getLong();
 						}
 						this.RB.clear();
-						if (this.masking[4] != 0)
+						if (this.masking.having)
 						{
 							this.RB.limit(4);
 							this.status = WebSocket.RS_MASKING;
@@ -546,51 +538,56 @@ public class WebSocket
 					}
 					case WebSocket.RS_MASKING:
 					{
-						int read = WebSocket.transfer(this.socket, this.blocking, this.RB);
-						if (read == -1)
-							this.close();
+						this.transfer(this.RB);
 						if (this.RB.hasRemaining()) break;
 						this.RB.flip();
-						this.RB.get(this.masking, 0, 4);
+						byte[] msk = new byte[4];
+						this.RB.get(msk);
+						this.masking.set(msk);
 						this.RB = WebSocket.expand(this.RB, this.length);
 						this.RB.limit((int) this.length);
 						this.RS = WebSocket.RS_PAYLOAD;
 					}
 					case WebSocket.RS_PAYLOAD:
 					{
-						int read = WebSocket.transfer(this.socket, this.blocking, this.RB);
-						if (read == -1)
-							this.close();
+						this.transfer(this.RB);
+						if (this.opcode == OPC_CONTINUE || this.opcode == OPC_TEXT || this.opcode == OPC_BINARY)
+						{
+							int rema = this.RB.remaining();
+							this.RB.flip();
+							byte[] payload = new byte[RB.remaining()];
+							this.masking.masking(payload);
+							this.array.put(payload);
+							this.RB.clear();
+							this.RB.limit(rema);
+						}
 						if (this.RB.hasRemaining()) break;
 						this.RS = WebSocket.RS_OVERED;
-						this.RB.flip();
-						byte[] payload = new byte[this.RB.remaining()];
-						this.RB.get(payload);
-						if (this.masking[4] != 0)
-						{
-							WebSocket.masking(this.masking, payload);
-						}
 						switch (this.opcode)
 						{
 							case WebSocket.OPC_CONTINUE:
 							case WebSocket.OPC_TEXT:
 							case WebSocket.OPC_BINARY:
-								this.array.put(payload);
+							case WebSocket.OPC_PONG:
 								break;
 							case WebSocket.OPC_CLOSE:
 								this.reading = false;
 								this.close();
 								break;
 							case WebSocket.OPC_PING:
+								this.RB.flip();
+								byte[] payload = new byte[this.RB.remaining()];
+								this.RB.get(payload);
+								this.masking.masking(payload);
 								// send pong
 								this.RB = WebSocket.expand(this.RB, payload.length + 16);
-								this.random.nextBytes(this.masking);
-								WebSocket.masking(this.masking, payload);
+								this.masking.next(this.random);
+								this.masking.masking(payload);
 								this.RB.clear();
 								this.RB.put((byte) (WebSocket.MASK_FIN | WebSocket.OPC_PING));
 								this.RB.put((byte) (WebSocket.MASK_MSK | 127));
 								this.RB.putLong(this.RB.remaining());
-								this.RB.put(this.masking, 0, 4);
+								this.RB.put(this.masking.value());
 								this.RB.put(payload);
 								this.RB.flip();
 								this.locking[WebSocket.WRITING].lock();
@@ -598,9 +595,8 @@ public class WebSocket
 									this.socket.write(this.RB);
 								this.locking[WebSocket.WRITING].unlock();
 								break;
-							case WebSocket.OPC_PONG:
-								break;
 						}
+						this.RB.clear();
 						return;
 					}
 				}
@@ -637,19 +633,19 @@ public class WebSocket
 		return ByteBuffer.allocate(oldCap);
 	}
 
-	private static int transfer(SocketChannel socket, boolean blocking, ByteBuffer buffer) throws IOException
+	private void transfer(ByteBuffer buffer) throws IOException
 	{
-		int read = 0;
-		if (blocking)
+		int read = socket.read(buffer);
+		while (buffer.hasRemaining() && read == -1 && blocking)
 		{
-			while (buffer.hasRemaining() && read != -1)
-			{
-				read = socket.read(buffer);
-			}
+			int read0 = socket.read(buffer);
+			if (read0 == -1) read = -1;
+			else read += read0;
 		}
-		else
-			read = socket.read(buffer);
-		return read;
+		if (read == -1)
+		{
+			this.shutdown(true);
+		}
 	}
 
 	public static String key(Random random)

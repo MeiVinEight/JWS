@@ -144,8 +144,12 @@ public class WebSocket
 		this.header.put(key, value);
 	}
 
-	public boolean finish()
+	public boolean finish(long timeoutMillis)
 	{
+		if (timeoutMillis < 0)
+			throw new IllegalArgumentException("Timeout cannot be negative");
+		long endTime = System.currentTimeMillis() + timeoutMillis;
+		boolean blocking = this.blocking;
 		try
 		{
 			switch (this.status)
@@ -153,7 +157,7 @@ public class WebSocket
 				case WebSocket.STAT_CLOSED:
 					this.reset();
 					this.socket = SocketChannel.open();
-					this.socket.configureBlocking(this.blocking);
+					this.socket.configureBlocking(false);
 					SocketAddress address = new InetSocketAddress(this.host, this.port);
 					this.socket.connect(address);
 					this.status = WebSocket.STAT_CONNECTING;
@@ -163,7 +167,17 @@ public class WebSocket
 					{
 						throw new NullPointerException();
 					}
-					if (!this.socket.finishConnect()) return false;
+					boolean contu = true;
+					while (contu)
+					{
+						contu = !this.socket.finishConnect();
+						if (timeoutMillis > 0 && System.currentTimeMillis() > endTime)
+							break;
+						if (!blocking && timeoutMillis == 0)
+							break;
+						Thread.yield();
+					}
+					if (contu) return false;
 					this.status = WebSocket.STAT_HANDSHAKE1;
 
 				case WebSocket.STAT_HANDSHAKE1:
@@ -189,29 +203,39 @@ public class WebSocket
 					this.status = WebSocket.STAT_HANDSHAKE2;
 
 				case WebSocket.STAT_HANDSHAKE2:
-					this.RB.clear();
-					this.RB.limit(1);
-					int read = this.socket.read(this.RB);
-					if (read == 0) return false;
-					this.RB.flip();
-					// for (int i = 0; i < this.RB.limit(); i++)
-					while (this.RB.hasRemaining())
+					do
 					{
-						byte b = this.RB.get();
-						this.array.put(b);
-						int off = this.array.length() - 4;
-						if (off < 0) continue;
-						int b0 = this.array.get(off);
-						int b1 = this.array.get(off + 1);
-						int b2 = this.array.get(off + 2);
-						int b3 = this.array.get(off + 3);
-						if ((b0 == '\r') && (b1 == '\n') && (b2 == '\r') && (b3 == '\n'))
+						this.RB.clear();
+						this.RB.limit(1);
+						int read = this.socket.read(this.RB);
+						if (read > 0)
 						{
-							this.status = WebSocket.STAT_HANDSHAKE3;
-							break;
+							this.RB.flip();
+							byte b = this.RB.get();
+							this.array.put(b);
 						}
+						int off = this.array.length() - 4;
+						if (off >= 0)
+						{
+							int b0 = this.array.get(off);
+							int b1 = this.array.get(off + 1);
+							int b2 = this.array.get(off + 2);
+							int b3 = this.array.get(off + 3);
+							if ((b0 == '\r') && (b1 == '\n') && (b2 == '\r') && (b3 == '\n'))
+							{
+								this.status = WebSocket.STAT_HANDSHAKE3;
+								break;
+							}
+						}
+						if (timeoutMillis > 0 && System.currentTimeMillis() > endTime)
+							break;
+						if (!blocking && timeoutMillis == 0)
+							break;
 					}
-					return false;
+					while (this.blocking);
+
+					if (this.status == WebSocket.STAT_HANDSHAKE2)
+						return false;
 
 				case WebSocket.STAT_HANDSHAKE3:
 					StringBuilder builder = new StringBuilder(this.array.length());
@@ -285,6 +309,11 @@ public class WebSocket
 		return false;
 	}
 
+	public boolean finish()
+	{
+		return this.finish(0);
+	}
+
 	public boolean reading()
 	{
 		return this.reading;
@@ -297,31 +326,43 @@ public class WebSocket
 
 	public void blocking(boolean block)
 	{
+		this.locking[WebSocket.READING].lock();
+		this.locking[WebSocket.WRITING].lock();
 		this.blocking = block;
-		if (this.socket != null)
-		{
-			try
-			{
-				this.socket.configureBlocking(this.blocking);
-			}
-			catch (IOException e)
-			{
-				JavaVM.exception(e);
-			}
-		}
+		this.locking[WebSocket.WRITING].unlock();
+		this.locking[WebSocket.READING].unlock();
 	}
 
-	public int read(byte[] buf, int off, int len)
+	public boolean blocking()
 	{
+		return this.blocking;
+	}
+
+	public int status()
+	{
+		return this.status;
+	}
+
+	public int read(byte[] buf, int off, int len, long timeoutMillis)
+	{
+		if (timeoutMillis < 0)
+			throw new IllegalArgumentException("Timeout cannot be negative");
+		long endTime = System.currentTimeMillis() + timeoutMillis;
+
 		int retVal = 0;
 		try
 		{
 			this.locking[WebSocket.READING].lock();
+			boolean blocking = this.blocking;
 			if (!this.reading()) return -1;
-			while (this.array.length() < len)
+			while (this.array.length() == 0)
 			{
 				this.receive();
-				if (this.blocking) break;
+				if (timeoutMillis > 0 && System.currentTimeMillis() > endTime)
+					break;
+				if (!blocking && timeoutMillis == 0)
+					break;
+				Thread.yield();
 			}
 			int read = this.array.length();
 			if (read > len) read = len;
@@ -338,6 +379,11 @@ public class WebSocket
 			this.locking[WebSocket.READING].unlock();
 		}
 		return retVal;
+	}
+
+	public int read(byte[] buf, int off, int len)
+	{
+		return this.read(buf, off, len, 0);
 	}
 
 	public void write(byte[] buf, int off, int len)
@@ -373,13 +419,31 @@ public class WebSocket
 		}
 	}
 
-	public void shutdown(boolean reading) throws IOException
+	public void shutdown(boolean reading, long timeoutMillis) throws IOException
 	{
+		if (timeoutMillis < 0)
+			throw new IllegalArgumentException("Timeout cannot be negative");
+		long endTime = System.currentTimeMillis() + timeoutMillis;
+		boolean blocking = this.blocking;
 		if (reading)
 		{
-			this.locking[WebSocket.READING].lock();
-			this.reading = false;
-			this.locking[WebSocket.READING].unlock();
+			try
+			{
+				this.locking[WebSocket.READING].lock();
+				while (this.reading())
+				{
+					this.receive();
+					if (timeoutMillis > 0 && System.currentTimeMillis() > endTime)
+						break;
+					if (!blocking && timeoutMillis == 0)
+						break;
+					Thread.yield();
+				}
+			}
+			finally
+			{
+				this.locking[WebSocket.READING].unlock();
+			}
 			return;
 		}
 
@@ -388,12 +452,11 @@ public class WebSocket
 			this.locking[WebSocket.WRITING].lock();
 			if (!this.writing()) return;
 
+			this.writing = false;
 			Array buf = new Array(2);
 			buf.integer(1000, 2);
 			byte[] data = new byte[2];
 			buf.get(data, 0, 2);
-			this.locking[WebSocket.WRITING].lock();
-			this.writing = false;
 			this.WB.clear();
 			this.WB.put((byte) (WebSocket.MASK_FIN | WebSocket.OPC_CLOSE));
 			this.WB.put((byte) (WebSocket.MASK_MSK | 2));
@@ -412,6 +475,11 @@ public class WebSocket
 		}
 	}
 
+	public void shutdown(boolean reading) throws IOException
+	{
+		this.shutdown(reading, 0);
+	}
+
 	public void reset()
 	{
 		this.reading = false;
@@ -427,55 +495,74 @@ public class WebSocket
 			}
 		}
 		this.socket = null;
+		this.blocking = true;
+		this.RB.clear();
+		this.WB.clear();
+		this.RS = WebSocket.RS_OVERED;
+		this.opcode = 0;
+		this.length = 0;
+		this.masking.reset();
+		this.array.trim(this.array.length());
+		this.status = WebSocket.STAT_CLOSED;
 	}
 
-	public void close()
+	public void close(long timeoutMillis)
 	{
 		try
 		{
 			this.locking[WebSocket.READING].lock();
-			if (this.status == WebSocket.STAT_CLOSED || this.status == WebSocket.STAT_CLOSING)
+			this.locking[WebSocket.WRITING].lock();
+
+			if (this.status == WebSocket.STAT_CLOSED)
 				return;
+
 			this.status = WebSocket.STAT_CLOSING;
-		}
-		finally
-		{
-			this.locking[WebSocket.READING].unlock();
-		}
 
-		try
-		{
-			this.shutdown(false);
-		}
-		catch (IOException ignored)
-		{
-		}
-
-		if (this.reading)
-		{
 			try
 			{
-				this.locking[WebSocket.READING].lock();
-				this.shutdown(true);
-				this.socket.configureBlocking(false);
-				long timestamp = System.currentTimeMillis();
-				while (this.reading && ((timestamp + 10000) < System.currentTimeMillis()))
-				{
-					this.receive();
-				}
-				// Timeout
-				this.reading = false;
+				this.shutdown(false);
 			}
 			catch (IOException ignored)
 			{
 			}
-			finally
+
+			this.locking[WebSocket.WRITING].lock();
+			if (this.writing())
+			{
+				this.locking[WebSocket.WRITING].unlock();
+				return;
+			}
+			this.locking[WebSocket.WRITING].unlock();
+
+			try
+			{
+				this.shutdown(true, timeoutMillis);
+			}
+			catch (IOException ignored)
+			{
+			}
+
+			this.locking[WebSocket.READING].lock();
+			if (this.reading())
 			{
 				this.locking[WebSocket.READING].unlock();
+				return;
 			}
+			this.locking[WebSocket.READING].unlock();
+
+			if (!this.reading() && !this.writing())
+				this.reset();
 		}
-		this.status = WebSocket.STAT_CLOSED;
-		this.reset();
+		finally
+		{
+			this.locking[WebSocket.WRITING].unlock();
+			this.locking[WebSocket.READING].unlock();
+		}
+	}
+
+	public void close()
+	{
+		this.close(0);
 	}
 
 	private void receive()
@@ -514,7 +601,7 @@ public class WebSocket
 						this.transfer(this.RB);
 						if (this.RB.hasRemaining()) break;
 						this.RB.flip();
-						if (this.RB.limit() == 1)
+						if (this.RB.remaining() == 1)
 						{
 							int b1 = this.RB.get() & 0xFF;
 							if ((b1 & WebSocket.MASK_MSK) != 0) this.masking.having = true;
@@ -536,8 +623,8 @@ public class WebSocket
 						}
 						else
 						{
-							if (this.RB.limit() == 2) this.length = this.RB.getShort() & 0xFFFF;
-							else if (this.RB.limit() == 8) this.length = this.RB.getLong();
+							if (this.RB.remaining() == 2) this.length = this.RB.getShort() & 0xFFFF;
+							else if (this.RB.remaining() == 8) this.length = this.RB.getLong();
 						}
 						this.RB.clear();
 						if (this.masking.having)
@@ -567,7 +654,7 @@ public class WebSocket
 					}
 					case WebSocket.RS_PAYLOAD:
 					{
-						this.transfer(this.RB);
+						this.socket.read(this.RB);
 						if (this.opcode == OPC_CONTINUE || this.opcode == OPC_TEXT || this.opcode == OPC_BINARY)
 						{
 							int rema = this.RB.remaining();
@@ -578,7 +665,7 @@ public class WebSocket
 							this.RB.clear();
 							this.RB.limit(rema);
 						}
-						if (this.RB.hasRemaining()) break;
+						if (this.RB.hasRemaining()) return;
 						this.RS = WebSocket.RS_OVERED;
 						switch (this.opcode)
 						{
@@ -589,7 +676,6 @@ public class WebSocket
 								break;
 							case WebSocket.OPC_CLOSE:
 								this.reading = false;
-								this.close();
 								break;
 							case WebSocket.OPC_PING:
 								this.RB.flip();
@@ -622,7 +708,9 @@ public class WebSocket
 		}
 		catch (Throwable e)
 		{
-			this.close();
+			this.locking[WebSocket.READING].lock();
+			this.reading = false;
+			this.locking[WebSocket.READING].unlock();
 			JavaVM.exception(e);
 		}
 		finally
@@ -653,7 +741,7 @@ public class WebSocket
 	private void transfer(ByteBuffer buffer) throws IOException
 	{
 		int read = socket.read(buffer);
-		while (buffer.hasRemaining() && read == -1 && blocking)
+		while (buffer.hasRemaining() && read != -1 && blocking)
 		{
 			int read0 = socket.read(buffer);
 			if (read0 == -1) read = -1;

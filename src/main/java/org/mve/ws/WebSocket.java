@@ -660,6 +660,7 @@ public class WebSocket
 							int rema = this.RB.remaining();
 							this.RB.flip();
 							byte[] payload = new byte[RB.remaining()];
+							this.RB.get(payload);
 							this.masking.masking(payload);
 							this.array.put(payload);
 							this.RB.clear();

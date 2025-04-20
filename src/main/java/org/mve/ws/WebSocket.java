@@ -688,7 +688,7 @@ public class WebSocket
 								this.masking.next(this.random);
 								this.masking.masking(payload);
 								this.RB.clear();
-								this.RB.put((byte) (WebSocket.MASK_FIN | WebSocket.OPC_PING));
+								this.RB.put((byte) (WebSocket.MASK_FIN | WebSocket.OPC_PONG));
 								this.RB.put((byte) (WebSocket.MASK_MSK | 127));
 								this.RB.putLong(payload.length);
 								this.RB.put(this.masking.value());

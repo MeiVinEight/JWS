@@ -689,8 +689,20 @@ public class WebSocket
 								this.masking.masking(payload);
 								this.RB.clear();
 								this.RB.put((byte) (WebSocket.MASK_FIN | WebSocket.OPC_PONG));
-								this.RB.put((byte) (WebSocket.MASK_MSK | 127));
-								this.RB.putLong(payload.length);
+								if (payload.length <= 125)
+								{
+									this.RB.put((byte) (WebSocket.MASK_MSK | payload.length));
+								}
+								else if (payload.length <= 65535)
+								{
+									this.RB.put((byte) (WebSocket.MASK_RSV | 126));
+									this.RB.putShort((short) payload.length);
+								}
+								else
+								{
+									this.RB.put((byte) (WebSocket.MASK_RSV | 127));
+									this.RB.putLong((short) payload.length);
+								}
 								this.RB.put(this.masking.value());
 								this.RB.put(payload);
 								this.RB.flip();

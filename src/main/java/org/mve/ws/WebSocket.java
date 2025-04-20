@@ -690,7 +690,7 @@ public class WebSocket
 								this.RB.clear();
 								this.RB.put((byte) (WebSocket.MASK_FIN | WebSocket.OPC_PING));
 								this.RB.put((byte) (WebSocket.MASK_MSK | 127));
-								this.RB.putLong(this.RB.remaining());
+								this.RB.putLong(payload.length);
 								this.RB.put(this.masking.value());
 								this.RB.put(payload);
 								this.RB.flip();

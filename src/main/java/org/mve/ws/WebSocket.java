@@ -750,7 +750,9 @@ public class WebSocket
 		}
 		if (read == -1)
 		{
-			this.shutdown(true);
+			this.locking[WebSocket.READING].lock();
+			this.reading = false;
+			this.locking[WebSocket.READING].unlock();
 		}
 	}
 

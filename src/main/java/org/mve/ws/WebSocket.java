@@ -85,7 +85,7 @@ public class WebSocket
 
 	private int opcode = 0;
 	private long length = 0;
-	private final MaskingKey masking = new MaskingKey();
+	private final MaskingKey[] masking = {new MaskingKey(), new MaskingKey()};
 	private final Array array = new Array(4096);
 
 	public WebSocket(String url)
@@ -397,12 +397,13 @@ public class WebSocket
 			this.WB.put((byte) (WebSocket.MASK_FIN | WebSocket.OPC_BINARY));
 			this.WB.put((byte) (WebSocket.MASK_MSK | 127));
 			this.WB.putLong(len);
-			this.masking.next(this.random);
-			this.masking.having = true;
+			MaskingKey rmask = this.masking[WebSocket.WRITING];
+			rmask.next(this.random);
+			rmask.having = true;
 			byte[] payload = new byte[len];
 			System.arraycopy(buf, off, payload, 0, len);
-			this.masking.masking(payload);
-			this.WB.put(this.masking.value());
+			rmask.masking(payload);
+			this.WB.put(rmask.value());
 			this.WB.put(payload);
 			this.WB.flip();
 			while (this.WB.hasRemaining())
@@ -501,7 +502,8 @@ public class WebSocket
 		this.RS = WebSocket.RS_OVERED;
 		this.opcode = 0;
 		this.length = 0;
-		this.masking.reset();
+		this.masking[WebSocket.READING].reset();
+		this.masking[WebSocket.WRITING].reset();
 		this.array.trim(this.array.length());
 		this.status = WebSocket.STAT_CLOSED;
 	}
@@ -526,13 +528,8 @@ public class WebSocket
 			{
 			}
 
-			this.locking[WebSocket.WRITING].lock();
 			if (this.writing())
-			{
-				this.locking[WebSocket.WRITING].unlock();
 				return;
-			}
-			this.locking[WebSocket.WRITING].unlock();
 
 			try
 			{
@@ -542,13 +539,8 @@ public class WebSocket
 			{
 			}
 
-			this.locking[WebSocket.READING].lock();
 			if (this.reading())
-			{
-				this.locking[WebSocket.READING].unlock();
 				return;
-			}
-			this.locking[WebSocket.READING].unlock();
 
 			if (!this.reading() && !this.writing())
 				this.reset();
@@ -578,7 +570,7 @@ public class WebSocket
 					{
 						this.opcode = 0;
 						this.length = 0;
-						this.masking.reset();
+						this.masking[WebSocket.READING].reset();
 						this.RB.clear();
 						this.RB.limit(1);
 						this.RS = WebSocket.RS_OPCODE;
@@ -604,7 +596,7 @@ public class WebSocket
 						if (this.RB.remaining() == 1)
 						{
 							int b1 = this.RB.get() & 0xFF;
-							if ((b1 & WebSocket.MASK_MSK) != 0) this.masking.having = true;
+							if ((b1 & WebSocket.MASK_MSK) != 0) this.masking[WebSocket.READING].having = true;
 							this.length = b1 & WebSocket.MASK_LEN;
 							if (this.length == 126)
 							{
@@ -627,7 +619,7 @@ public class WebSocket
 							else if (this.RB.remaining() == 8) this.length = this.RB.getLong();
 						}
 						this.RB.clear();
-						if (this.masking.having)
+						if (this.masking[WebSocket.READING].having)
 						{
 							this.RB.limit(4);
 							this.status = WebSocket.RS_MASKING;
@@ -647,7 +639,7 @@ public class WebSocket
 						this.RB.flip();
 						byte[] msk = new byte[4];
 						this.RB.get(msk);
-						this.masking.set(msk);
+						this.masking[WebSocket.READING].set(msk);
 						this.RB = WebSocket.expand(this.RB, this.length);
 						this.RB.limit((int) this.length);
 						this.RS = WebSocket.RS_PAYLOAD;
@@ -661,7 +653,7 @@ public class WebSocket
 							this.RB.flip();
 							byte[] payload = new byte[RB.remaining()];
 							this.RB.get(payload);
-							this.masking.masking(payload);
+							this.masking[WebSocket.READING].masking(payload);
 							this.array.put(payload);
 							this.RB.clear();
 							this.RB.limit(rema);
@@ -682,11 +674,11 @@ public class WebSocket
 								this.RB.flip();
 								byte[] payload = new byte[this.RB.remaining()];
 								this.RB.get(payload);
-								this.masking.masking(payload);
+								this.masking[WebSocket.READING].masking(payload);
 								// send pong
 								this.RB = WebSocket.expand(this.RB, payload.length + 16);
-								this.masking.next(this.random);
-								this.masking.masking(payload);
+								this.masking[WebSocket.READING].next(this.random);
+								this.masking[WebSocket.READING].masking(payload);
 								this.RB.clear();
 								this.RB.put((byte) (WebSocket.MASK_FIN | WebSocket.OPC_PONG));
 								if (payload.length <= 125)
@@ -703,13 +695,19 @@ public class WebSocket
 									this.RB.put((byte) (WebSocket.MASK_RSV | 127));
 									this.RB.putLong((short) payload.length);
 								}
-								this.RB.put(this.masking.value());
+								this.RB.put(this.masking[WebSocket.READING].value());
 								this.RB.put(payload);
 								this.RB.flip();
-								this.locking[WebSocket.WRITING].lock();
-								while (this.RB.hasRemaining())
-									this.socket.write(this.RB);
-								this.locking[WebSocket.WRITING].unlock();
+								try
+								{
+									this.locking[WebSocket.WRITING].lock();
+									while (this.RB.hasRemaining())
+										this.socket.write(this.RB);
+								}
+								finally
+								{
+									this.locking[WebSocket.WRITING].unlock();
+								}
 								break;
 						}
 						this.RB.clear();
